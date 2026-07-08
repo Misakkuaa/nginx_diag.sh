@@ -1,10 +1,11 @@
-﻿#!/bin/sh
+#!/bin/sh
 # ============================================================
 # OpenWrt Nginx & API 连通性诊断脚本
 # 功能：
 #   1. 检查 Nginx 状态，非 running 时排查配置错误
 #   2. 通过 curl 127.0.0.1/api/copyright1 检测接口连通性
 #   3. 对比 DNS 解析 IP 与 nftables 放行 IP 是否匹配
+#   4. 测试常用网站可达性（YouTube/Facebook/Instagram/Google 等）
 # ============================================================
 
 set -e
@@ -125,6 +126,54 @@ else
     else
         warn "openssl 未安装，跳过 SSL 握手测试"
     fi
+fi
+
+# ---- 步骤 2.5: 常用网站可达性检测 ----
+step "2.5 常用网站可达性检测"
+
+# 说明：
+# - 使用 HTTPS 访问首页或健康检查路径
+# - 返回 HTTP 状态码 + 总耗时 + 远端 IP
+# - 若超时或连接失败，会输出 FAIL
+COMMON_SITES="
+youtube https://www.youtube.com
+facebook https://www.facebook.com
+instagram https://www.instagram.com
+google https://www.google.com
+google_gstatic https://www.gstatic.com/generate_204
+"
+
+if ! command -v curl >/dev/null 2>&1; then
+    fail "curl 未安装，无法执行网站可达性检测"
+else
+    echo "$COMMON_SITES" | while read -r name url; do
+        [ -z "$name" ] && continue
+        [ -z "$url" ] && continue
+
+        info "测试站点: $name ($url)"
+
+        OUT=$(curl -k -L -sS --connect-timeout 5 --max-time 12 \
+            -o /dev/null \
+            -w "%{http_code} %{time_total} %{remote_ip}" \
+            "$url" 2>&1) || true
+
+        CODE=$(echo "$OUT" | awk '{print $1}')
+        TIME=$(echo "$OUT" | awk '{print $2}')
+        RIP=$(echo "$OUT" | awk '{print $3}')
+
+        if echo "$CODE" | grep -qE '^[0-9]{3}$'; then
+            case "$CODE" in
+                2*|3*)
+                    pass "$name 可达 (HTTP $CODE, ${TIME}s, IP: ${RIP:-unknown})"
+                    ;;
+                *)
+                    warn "$name 可连接但状态异常 (HTTP $CODE, ${TIME}s, IP: ${RIP:-unknown})"
+                    ;;
+            esac
+        else
+            fail "$name 不可达 ($OUT)"
+        fi
+    done
 fi
 
 # ---- 步骤 3: DNS 解析与 nftables 放行 IP 对比 ----
